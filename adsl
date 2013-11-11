@@ -1,0 +1,38 @@
+#!/bin/bash
+
+APP_PATH=/root/multi-path
+. $APP_PATH/lib/function
+
+case $1 in
+	add)
+	[ -z $2 ] || [ -z $3 ] && echo "Adding Team Failed" && echo -e "\nsyntax: $0 add TEAM PROVIDER" && exit 1
+	add $2 $3
+	;;
+	remove)
+	[ -z $2 ] && echo "Removing Team Failed" && echo -e "\nsyntax: $0 remove TEAM" && exit 1
+	remove $2
+	;;
+	removeall)
+	removeall
+	;;
+	move)
+	[ -z $2 ] || [ -z $3 ] && echo "Moving Team Failed" && echo -e "\nsyntax: $0 move TEAM PROVIDER" && exit 1
+	move $2 $3
+	;;
+	list)
+	list $2
+	;;
+	listrtr)
+	listrtr
+	;;
+	listteam)
+	listteam
+	;;
+	listv)
+	listv
+	;;
+	*)
+	echo "Syntax : $0 [add|remove|removeall|move|list|listrtr|listteam|listv] TEAM [PROVIDER]";
+	;;
+esac
+	

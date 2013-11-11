@@ -1,0 +1,122 @@
+#!/bin/bash
+
+LISTING=/root/multi-path/etc/listing
+
+function listrtr {
+    for RTR in $(cat /etc/iproute2/rt_tables | grep adsl | sed -e "s/.*[[:space:]]//");
+    do
+      echo -n "&liaison[]=$RTR";
+    done
+}
+
+function listteam {
+    ip rule list | grep adsl | sed -e "s/.*from //" -e "s/ .*$//" > /tmp/listteam
+    for i in $(cat $LISTING | grep -v "^#" | cut -d' ' -f 3);
+    do
+        cat /tmp/listteam | grep -wqs $i;
+        [ $? -ne 0 ] && echo -n "&equipe[]=$(cat $LISTING | grep $i | cut -d' ' -f2)";
+    done > /tmp/listaffect
+    cat /tmp/listaffect
+}
+
+function listv {
+    for NETWORK in $(ip rule list | grep adsl | sed -e "s/.*from //" -e "s/ .*$//");
+    do
+      grep -qs $NETWORK $LISTING 2>/dev/null
+      [ $? -ne 0 ] && TEAM=$(grep $NETWORK $LISTING | sed -e "s/[[:space:]]/:/g" | cut -d':' -f2) && vTEAM="&equipe[]=$TEAM"
+    done
+    echo $vTEAM;
+}
+
+function list {
+    for RULE in $(ip rule list | grep $1 | sed -e "s/.*from //" -e "s/ lookup//" -e "s/ /:/" | sort -n);
+    do
+      NETWORK=$(echo $RULE | cut -d ":" -f 1);
+      grep -qs $NETWORK $LISTING 2>/dev/null
+      [ $? -eq 0 ] && TEAM=$(grep $NETWORK $LISTING | sed -e "s/[[:space:]]/:/g" | cut -d':' -f2) && echo -n "&equipe[]=$TEAM"
+    done
+}
+
+function remove {
+  # on recupere le reseau de la team
+  NETWORK=$(grep -w $1 $LISTING | sed -e "s/[[:space:]]/:/g" | cut -d':' -f3);
+  [ -z "$NETWORK" ] && echo "La team $1 n'existe pas dans le listing" && exit 1
+  # une fois qu'on a le reseau, on récupère le provider
+  PROVIDER=$(ip rule list | grep $NETWORK | sed -e "s/.*lookup //")
+  # on verifie que la règle à effacer est bien dans la liste
+  ip rule del from $NETWORK table $PROVIDER
+  echo "Remove $1 from $PROVIDER"
+  ip rule list | grep adsl 1>/dev/null 2>/dev/null
+  [ $? -ne 0 ] && ip route add default scope global nexthop via 192.168.1.254 dev eth0 weight 1 nexthop via 192.168.2.254 dev eth2 weight 1 nexthop via 192.168.3.254 dev eth3 weight 1 nexthop via 192.168.4.254 dev eth4 weight 1 && iptables -P DROP ACCEPT
+  iptables -D FORWARD -s $NETWORK -j ACCEPT
+  iptables -D FORWARD -d $NETWORK -j ACCEPT
+}
+
+function removeall {
+    for RULE in $(ip rule list | grep adsl | sed -e "s/.*from //" -e "s/ lookup//" -e "s/ /:/" | sort -n);
+    do
+      NETWORK=$(echo $RULE | cut -d ":" -f 1);
+      PROVIDER=$(ip rule list | grep $NETWORK | sed -e "s/.*lookup //");
+      ip rule del from $NETWORK table $PROVIDER
+    done
+
+    # suppression de la route par default
+    ip route list | grep "192.168.0.254" 1>/dev/null 2>/dev/null
+    [ $? -eq 0 ] && ip route del default
+    # repartition de charge
+    ip route add default scope global nexthop via 192.168.1.254 dev eth0 weight 1 nexthop via 192.168.2.254 dev eth2 weight 1 nexthop via 192.168.3.254 dev eth3 weight 1 nexthop via 192.168.4.254 dev eth4 weight 1
+    iptables -F 
+    iptables -X
+    iptables -P FORWARD ACCEPT
+}
+
+function add {
+  # on verifie que le provider saisie existe
+  grep -qsw $2 /etc/iproute2/rt_tables
+  [ $? -eq 1 ] && echo "La table de routage $2 n'existe pas." && exit 1
+  # on recupere le reseau de la team
+  NETWORK=$(grep -w $1 $LISTING | sed -e "s/[[:space:]]/:/g" | cut -d':' -f3);
+  [ -z "$NETWORK" ] && echo "La team $1 n'existe pas dans le listing" && exit 1
+  # une fois qu'on a le reseau, on regarde s'il n'est pas déjà affecté à un provider
+  PROVIDER=$(ip rule list | grep $NETWORK | sed -e "s/.*lookup //")
+  [ ! -z $PROVIDER ] && echo "La team $1 est déjà affecté à $PROVIDER" && exit 1
+  PROVIDER=$2
+  ip rule add from $NETWORK table $PROVIDER
+  iptables -L -nv | grep 10.0.0.0/28 1>/dev/null 2>/dev/null
+  [ $? -ne 0 ] && iptables -A FORWARD -s 10.0.0.0/28 -j ACCEPT && iptables -A FORWARD -d 10.0.0.0/28 -j ACCEPT
+  iptables -P FORWARD DROP
+  iptables -A FORWARD -s $NETWORK -j ACCEPT
+  iptables -A FORWARD -d $NETWORK -j ACCEPT
+  echo "Adding $1 to $PROVIDER"
+}
+
+function move {
+  # on verifie que le provider saisie existe
+  grep -qsw $2 /etc/iproute2/rt_tables
+  [ $? -eq 1 ] && echo "La table de routage $2 n'existe pas." && exit 1
+  # on recupere le reseau de la team
+  NETWORK=$(grep -w $1 $LISTING | sed -e "s/[[:space:]]/:/g" | cut -d':' -f3);
+  [ -z "$NETWORK" ] && echo "La team $1 n'existe pas dans le listing" && exit 1
+  # une fois qu'on a le reseau, on récupère le provider
+  PROVIDER=$(ip rule list | grep $NETWORK | sed -e "s/.*lookup //")
+  # si le provider saisie est le même que la règle qui existe, on sort directement
+  [ $PROVIDER == $2 ] && echo "$1 est déjà affecté sur $2." && list && exit 1
+  # on verifie que la règle à effacer est bien dans la liste
+  ip rule del from $NETWORK table $PROVIDER
+  echo "Remove $1 from $PROVIDER"
+  # on recupere le reseau de la team
+  NETWORK=$(grep -w $1 $LISTING| sed -e "s/[[:space:]]/:/g" | cut -d':' -f3);
+  [ -z "$NETWORK" ] && echo "La team $1 n'existe pas dans le listing" && exit 1
+  # une fois qu'on a le reseau, on regarde s'il n'est pas déjà affecté à un provider
+  PROVIDER=$(ip rule list | grep $NETWORK | sed -e "s/.*lookup //")
+  [ ! -z $PROVIDER ] && echo "La team $1 est déjà affecté à $PROVIDER" && exit 1
+  PROVIDER=$2
+  # on verifie que la règle à effacer est bien dans la liste
+  ip rule add from $NETWORK table $PROVIDER
+  echo "Adding $1 to $PROVIDER"
+}
+
+function full {
+  echo "Open for all"
+}
+
